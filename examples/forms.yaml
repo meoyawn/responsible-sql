@@ -1,0 +1,115 @@
+insertForm:
+  insert: forms
+  params:
+    id: FormID
+    start: FieldID
+    name: string
+    workspace_id: WorkspaceID
+    archived_at?: int64
+    member_private: boolean
+
+formExists:
+  # language=sqlite
+  one: SELECT EXISTS(SELECT 1 FROM forms WHERE id = ?)
+  params:
+    - FormID
+  result:
+    - boolean
+
+insertField:
+  insert: form_fields
+  params:
+    id: FieldID
+    form_id: FormID
+    name: string
+    type: FieldTypeEnum
+
+findForm:
+  # language=sqlite
+  one: |
+    SELECT ${result}
+    FROM forms
+    WHERE (id, archived_at) IS (?, NULL)
+  params:
+    - FormID
+  result:
+    id: FormID
+    workspace_id: WorkspaceID
+    name: string
+    description: string
+    member_private: boolean
+    start: FieldID
+    published_at?: int64
+    archived_at?: int64
+    created_at: int64
+    updated_at: int64
+    theme_json: string # see FormTheme
+
+formFields:
+  # language=sqlite
+  many: |
+    SELECT ${result}
+    FROM form_fields
+    WHERE (form_id, archived_at) IS (?, NULL)
+  params:
+    - FormID
+  result:
+    id: FieldID
+    form_id: FormID
+    name: string
+    description: string
+    type: FieldTypeEnum
+    image_url?: HttpURL
+    next?: string
+
+formOptions:
+  # language=sqlite
+  many: |
+    SELECT ${result}
+    FROM field_options
+    WHERE field_id IN (SELECT id
+                       FROM form_fields
+                       WHERE (form_id, archived_at) IS (?, NULL))
+  params:
+    - FormID
+  result:
+    field_id: FieldID
+    name: string
+    description: string
+    value: string
+    image_url?: HttpURL
+
+archiveForm:
+  # language=sqlite
+  exec: |
+    UPDATE forms
+    SET archived_at = unixepoch('subsec') * 1000
+    WHERE id = ?
+  params:
+    - FormID
+
+listWorkspaceForms:
+  # language=sqlite
+  many: |
+    SELECT ${result}
+    FROM (SELECT ${result}
+          FROM forms
+          WHERE (workspace_id, member_private, archived_at) IS (:workspaceID, TRUE, NULL)
+            AND EXISTS(SELECT 1
+                       FROM forms_users
+                       WHERE (form_id, user_id) IS (id, :userID))
+          
+          UNION ALL
+          
+          SELECT ${result}
+          FROM forms
+          WHERE (workspace_id, member_private, archived_at) IS (:workspaceID, FALSE, NULL))
+    ORDER BY updated_at DESC
+  params:
+    workspaceID: WorkspaceID
+    userID: UserID
+  result:
+    id: FormID
+    name: string
+    member_private: boolean
+    updated_at?: int64
