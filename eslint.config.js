@@ -22,6 +22,7 @@ export default tseslint.config(
         },
       ],
       eqeqeq: "error",
+      "no-console": "warn",
       "no-unused-vars": "off",
     },
   },
