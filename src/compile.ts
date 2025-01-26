@@ -1,4 +1,7 @@
+import * as v from "valibot"
 import * as yaml from "yaml"
+import { renderPostgres } from "./dialects/postgres"
+import { renderSQLite } from "./dialects/sqlite"
 import { isObject } from "./lib"
 
 type FieldName = `${string}${"?" | ""}`
@@ -14,7 +17,7 @@ type SelectStr =
   | `WITH ${string}`
   | `with ${string}`
 
-type Insert = Readonly<{
+export type Insert = Readonly<{
   insert: string
   params: Fields
   result?: "${params}" | Fields
@@ -34,21 +37,22 @@ type Many = Readonly<{
   params?: Params
   result: Result
 }>
-type Query = Insert | Exec | One | Many
+export type Query = Insert | Exec | One | Many
 
-const isInsert = (q: Query): q is Insert => "insert" in q
-const isExec = (q: Query): q is Exec => "exec" in q
-const isOne = (q: Query): q is One => "one" in q
-const isMany = (q: Query): q is Many => "many" in q
+export const isInsert = (q: Query): q is Insert => "insert" in q
+export const isExec = (q: Query): q is Exec => "exec" in q
+export const isOne = (q: Query): q is One => "one" in q
+export const isMany = (q: Query): q is Many => "many" in q
 
 const fieldName = (n: FieldName): string => n.replace("?", "")
 
 const _isOptional = (n: FieldName): n is `${string}?` => n.endsWith("?")
 
-const fieldNames = (fields: Fields): readonly string[] =>
+export const fieldNames = (fields: Fields): readonly string[] =>
   Object.keys(fields).map(fieldName)
 
-const allColumns = (fields: Fields): string => fieldNames(fields).join(", ")
+export const allColumns = (fields: Fields): string =>
+  fieldNames(fields).join(", ")
 
 function resultFields(
   declared: Partial<Record<string, Fields>>,
@@ -76,7 +80,7 @@ function resultFields(
   }
 }
 
-const expandResult = (
+export const expandResult = (
   structs: Partial<Record<string, Fields>>,
   sql: string,
   result: Result,
@@ -88,62 +92,40 @@ const expandResult = (
       )
     : sql
 
-function maybeReturning({
-  params,
-  result,
-}: Insert): `RETURNING ${string}` | "" {
-  switch (true) {
-    case result === "${params}":
-      return `RETURNING ${allColumns(params)}`
-
-    case !!result:
-      return `RETURNING ${allColumns(result)}`
-
-    default:
-      return ""
-  }
-}
-
-function renderSQL(structs: Record<string, Fields>, q: Query): string {
-  switch (true) {
-    case isInsert(q): {
-      const cols = allColumns(q.params)
-      const values = fieldNames(q.params)
-        .map(x => `:${x}`)
-        .join(", ")
-
-      return `
-INSERT INTO ${q.insert} (${cols})
-VALUES (${values})
-${maybeReturning(q)}
-`
-    }
-
-    case isExec(q):
-      return q.exec
-
-    case isOne(q):
-      return expandResult(structs, q.one, q.result)
-
-    case isMany(q):
-      return expandResult(structs, q.many, q.result)
-
-    default:
-      throw new Error(`Invalid query: ${JSON.stringify(q, null, 2)}`)
-  }
-}
-
 const TYPE_TAG = "!type"
 type TaggedType = `${typeof TYPE_TAG}${string}`
 const isTaggedType = (s: string): s is TaggedType => s.startsWith(TYPE_TAG)
 const tagType = (s: TypeName): TaggedType => `${TYPE_TAG}${s}`
 const toTypeName = (s: TaggedType): TypeName => s.slice(TYPE_TAG.length)
 
+const Dialect = v.pipe(
+  v.string(),
+  v.toLowerCase(),
+  v.union([v.literal("sqlite"), v.literal("postgres")]),
+)
+type Dialect = v.InferOutput<typeof Dialect>
+
+type Version = `${number}${`.${number}${string}` | ""}`
+
+export const Version = v.pipe(
+  v.unknown(),
+  v.transform(String),
+  v.regex(/^\d+(\.\d+)*$/, "Expecting a version string, e.g. 1.0"),
+  v.custom<Version>((): true => true),
+)
+
+const ResponsibleSQL = v.object({
+  version: Version,
+  dialect: Dialect,
+})
+
 type ParsedYAML = Readonly<
   {
     [k: TaggedType]: Fields
   } & {
     [k: string]: Query
+  } & {
+    responsibleSQL: v.InferOutput<typeof ResponsibleSQL>
   }
 >
 
@@ -202,28 +184,64 @@ export type CompiledYAML = Readonly<{
   queries: ReadonlyArray<OutputQuery>
 }>
 
-function compile(doc: ParsedYAML): CompiledYAML {
+function renderSQL(
+  types: Record<TypeName, Fields>,
+  q: Query,
+  dialect: Dialect,
+): string {
+  switch (dialect) {
+    case "sqlite":
+      return renderSQLite(types, q)
+
+    case "postgres":
+      return renderPostgres(types, q)
+  }
+}
+
+function compile(filePath: string, doc: ParsedYAML): CompiledYAML {
   const declaredTypes: Record<TypeName, Fields> = {}
   const resultTypes: Record<TypeName, Fields> = {}
+
+  let dialect: Dialect | undefined = undefined
 
   const queries = Array<OutputQuery>()
 
   for (const k in doc) {
-    if (isTaggedType(k)) {
-      declaredTypes[toTypeName(k)] = doc[k]
-    } else {
-      const q = doc[k]
+    switch (true) {
+      case isTaggedType(k):
+        declaredTypes[toTypeName(k)] = doc[k]
+        break
 
-      queries.push({
-        name: k,
-        sql: renderSQL(declaredTypes, q),
-        params: paramTypes(q),
-        result: q.result,
-        type: queryType(q),
-      })
+      case k === "responsibleSQL": {
+        const x = v.safeParse(ResponsibleSQL, doc[k])
+        if (x.success) {
+          dialect = x.output.dialect
+        } else {
+          throw new Error(`${filePath}: ${JSON.stringify(x.issues)}`)
+        }
+        break
+      }
 
-      if (isObject(q.result)) {
-        resultTypes[resultTypeName(k)] = q.result
+      default: {
+        const q = doc[k]
+        if (!dialect) {
+          throw new Error(
+            `${filePath}: define at the top: \`responsibleSQL: dialect: sqlite | postgres\``,
+          )
+        }
+
+        queries.push({
+          name: k,
+          sql: renderSQL(declaredTypes, q, dialect),
+          params: paramTypes(q),
+          result: q.result,
+          type: queryType(q),
+        })
+
+        if (isObject(q.result)) {
+          resultTypes[resultTypeName(k)] = q.result
+        }
+        break
       }
     }
   }
@@ -234,8 +252,9 @@ function compile(doc: ParsedYAML): CompiledYAML {
   }
 }
 
-export const compileYAML = (s: string): CompiledYAML =>
+export const compileYAML = (filePath: string, s: string): CompiledYAML =>
   compile(
+    filePath,
     yaml.parse(s, {
       strict: true,
       customTags: [
