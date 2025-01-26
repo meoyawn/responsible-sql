@@ -180,6 +180,7 @@ function queryType(q: Query): ExecOneMany {
 }
 
 export type CompiledYAML = Readonly<{
+  dialect: Dialect
   types: Readonly<Record<TypeName, Fields>>
   queries: ReadonlyArray<OutputQuery>
 }>
@@ -198,11 +199,16 @@ function renderSQL(
   }
 }
 
+const defineDialect = (filePath: string): string =>
+  `${filePath}: define at the top: \`responsibleSQL: dialect: sqlite | postgres\``
+
 function compile(filePath: string, doc: ParsedYAML): CompiledYAML {
+  const parseDialect = v.safeParse(ResponsibleSQL, doc.responsibleSQL)
+  if (!parseDialect.success) throw new Error(defineDialect(filePath))
+  const { dialect } = parseDialect.output
+
   const declaredTypes: Record<TypeName, Fields> = {}
   const resultTypes: Record<TypeName, Fields> = {}
-
-  let dialect: Dialect | undefined = undefined
 
   const queries = Array<OutputQuery>()
 
@@ -213,22 +219,12 @@ function compile(filePath: string, doc: ParsedYAML): CompiledYAML {
         break
 
       case k === "responsibleSQL": {
-        const x = v.safeParse(ResponsibleSQL, doc[k])
-        if (x.success) {
-          dialect = x.output.dialect
-        } else {
-          throw new Error(`${filePath}: ${JSON.stringify(x.issues)}`)
-        }
+        // already parsed
         break
       }
 
       default: {
         const q = doc[k]
-        if (!dialect) {
-          throw new Error(
-            `${filePath}: define at the top: \`responsibleSQL: dialect: sqlite | postgres\``,
-          )
-        }
 
         queries.push({
           name: k,
@@ -249,6 +245,7 @@ function compile(filePath: string, doc: ParsedYAML): CompiledYAML {
   return {
     types: { ...declaredTypes, ...resultTypes },
     queries,
+    dialect,
   }
 }
 

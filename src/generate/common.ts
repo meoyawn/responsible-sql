@@ -1,1 +1,1 @@
-export type Language = "typescript" | "kotlin"
+export type Language = "typescript" | "kotlin-vertx"

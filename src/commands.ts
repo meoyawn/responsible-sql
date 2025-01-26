@@ -4,20 +4,15 @@ import * as path from "node:path"
 import { compileYAML } from "./compile"
 import { explain } from "./explain"
 import type { Language } from "./generate/common"
-import { generateTS } from "./generate/typescript-sqlite"
+import { genPostgresKotlinVertx } from "./generate/kotlin-vertx-pg"
+import { genSQLiteTypescript } from "./generate/typescript-sqlite"
 
-async function* yamls(dir: string): AsyncGenerator<{
-  name: string
-  yaml: string
-  filePath: string
-}> {
+async function* yamlNames(dir: string): AsyncGenerator<string> {
   const files = await fs.readdir(dir, { recursive: true })
   for (const name of files) {
     if (!name.endsWith(".yaml") && !name.endsWith(".yml")) continue
 
-    const filePath = path.join(dir, name)
-    const yaml = await fs.readFile(filePath, "utf-8")
-    yield { name, yaml, filePath }
+    yield name
   }
 }
 
@@ -35,12 +30,43 @@ program
     "Typescript or Kotlin",
     "typescript" satisfies Language,
   )
-  .action(async ({ dir }: { dir: string; language: Language }) => {
-    for await (const { name, yaml, filePath } of yamls(dir)) {
-      const out = compileYAML(filePath, yaml)
-      console.log(generateTS(out))
+  .action(async ({ dir, language }: { dir: string; language: Language }) => {
+    for await (const filename of yamlNames(dir)) {
+      const { filePath, yaml } = await xxx(dir, filename)
+      const compiled = compileYAML(filePath, yaml)
+      switch (true) {
+        case compiled.dialect === "sqlite" && language === "typescript":
+          console.log(genSQLiteTypescript(compiled))
+          break
+
+        case compiled.dialect === "postgres" && language === "kotlin-vertx":
+          console.log(genPostgresKotlinVertx(compiled))
+          break
+
+        default:
+          throw new Error(
+            `Generating ${language} for ${compiled.dialect} isn't supported yet`,
+          )
+      }
     }
   })
+
+async function xxx(
+  dir: string,
+  filename: string,
+): Promise<{ filePath: string; yaml: string }> {
+  const filePath = path.join(dir, filename)
+  const yaml = await fs.readFile(filePath, "utf-8")
+  return { filePath, yaml }
+}
+
+async function explainAll(dir: string, database: string): Promise<void> {
+  for await (const filename of yamlNames(dir)) {
+    const { filePath, yaml } = await xxx(dir, filename)
+    const out = compileYAML(filePath, yaml)
+    await explain(out, database)
+  }
+}
 
 program
   .command("explain")
@@ -54,18 +80,34 @@ program
     "Directory with queries .yaml files",
     "/Users/adelnizamutdinov/Projects/formbox/back2/src/app/db/queries/",
   )
+  .option("-w, --watch", "Watch for changes")
   .action(
     async ({
       database,
       dir,
+      watch,
     }: {
-      queries: string
       database: string
       dir: string
+      watch?: boolean
     }) => {
-      for await (const { yaml, filePath } of yamls(dir)) {
-        const out = compileYAML(filePath, yaml)
-        await explain(out, database)
+      if (watch) {
+        await explainAll(dir, database)
+
+        console.log(`Watching ${dir}`)
+        for await (const { filename, eventType } of fs.watch(dir, {
+          recursive: true,
+        })) {
+          if (!filename?.endsWith(".yaml") && !filename?.endsWith(".yml")) {
+            continue
+          }
+          const { filePath, yaml } = await xxx(dir, filename)
+          console.log(eventType, filePath)
+          const out = compileYAML(filePath, yaml)
+          await explain(out, database)
+        }
+      } else {
+        await explainAll(dir, database)
       }
     },
   )

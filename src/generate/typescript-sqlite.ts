@@ -114,7 +114,7 @@ ${q.sql}
   )}
 `
 
-export const generateTS = ({ queries, types }: CompiledYAML): string =>
+export const genSQLiteTypescript = ({ queries, types }: CompiledYAML): string =>
   `
 ${Object.entries(types).map(printType).join("\n")}
 ${queries.map(printFunction).join("\n")}
