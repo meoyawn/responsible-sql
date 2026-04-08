@@ -27,10 +27,8 @@ The compiler is implemented in `src/compile.ts`; SQLite SQL rendering lives unde
 
 The CLI is wired in `src/commands.ts` (package `description`: **Typed raw SQL**). Commands:
 
-| Command | Role |
-|--------|------|
-| `generate` | Walk a directory for `.yaml` / `.yml`, compile each file, print generated code for the chosen `--language`. |
-| `explain` | Compile each YAML file and run SQLite `EXPLAIN QUERY PLAN` for every query against `--database`. Optional `--watch` re-runs on file changes. |
+- **`generate`:** Walk a directory for `.yaml` / `.yml`, compile each file, print generated code for the chosen `--language`.
+- **`explain`:** Compile each YAML file and run SQLite `EXPLAIN QUERY PLAN` for every query against `--database`. Optional `--watch` re-runs on file changes.
 
 **Note:** Default paths in the CLI options point at another local project; override `--dir` and `--database` for your setup. PostgreSQL + `kotlin-vertx` generation is not finished yet—the code throws until those paths are implemented.
 
